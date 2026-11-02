@@ -18,9 +18,16 @@ import MetadataStore, {
 import EventsListener from "./events-listener";
 import { GitHubSyncSettings } from "./settings/settings";
 import Logger, { LOG_FILE_NAME } from "./logger";
-import { decodeBase64String, hasTextExtension } from "./utils";
+import {
+  decodeBase64String,
+  hasTextExtension,
+  mapWithConcurrency,
+} from "./utils";
 import GitHubSyncPlugin from "./main";
 import { BlobReader, Entry, Uint8ArrayWriter, ZipReader } from "@zip.js/zip.js";
+
+// Maximum number of files hashed, downloaded or uploaded at the same time.
+const FILE_CONCURRENCY = 4;
 
 interface SyncAction {
   type: "upload" | "download" | "delete_local" | "delete_remote";
@@ -468,22 +475,18 @@ export default class SyncManager {
 
         // It's not necessary to set conflict resolutions as the content the
         // user expect must be the content of the remote file with no changes.
-        conflictActions = conflictResolutions.map(
-          (resolution: ConflictResolution) => {
-            return { type: "download", filePath: resolution.filePath };
-          },
-        );
+        conflictActions = conflicts.map((conflict: ConflictFile) => {
+          return { type: "download", filePath: conflict.filePath };
+        });
       } else if (this.settings.conflictHandling === "overwriteRemote") {
         // The user explicitly wants to always overwrite the remote file
         // in case of conflicts so we just upload the remote file to solve it.
 
         // It's not necessary to set conflict resolutions as the content the
         // user expect must be the content of the local file with no changes.
-        conflictActions = conflictResolutions.map(
-          (resolution: ConflictResolution) => {
-            return { type: "upload", filePath: resolution.filePath };
-          },
-        );
+        conflictActions = conflicts.map((conflict: ConflictFile) => {
+          return { type: "upload", filePath: conflict.filePath };
+        });
       }
     }
 
@@ -556,14 +559,16 @@ export default class SyncManager {
 
     // Download files and delete local files
     await Promise.all([
-      ...actions
-        .filter((action) => action.type === "download")
-        .map(async (action: SyncAction) => {
+      mapWithConcurrency(
+        actions.filter((action) => action.type === "download"),
+        FILE_CONCURRENCY,
+        async (action: SyncAction) => {
           await this.downloadFile(
             files[action.filePath],
             remoteMetadata.files[action.filePath].lastModified,
           );
-        }),
+        },
+      ),
       ...actions
         .filter((action) => action.type === "delete_local")
         .map(async (action: SyncAction) => {
@@ -589,8 +594,10 @@ export default class SyncManager {
       return [];
     }
 
-    const conflicts = await Promise.all(
-      commonFiles.map(async (filePath: string) => {
+    const conflicts = await mapWithConcurrency(
+      commonFiles,
+      FILE_CONCURRENCY,
+      async (filePath: string) => {
         if (filePath === `${this.vault.configDir}/${MANIFEST_FILE_NAME}`) {
           // The manifest file is only internal, the user must not
           // handle conflicts for this
@@ -621,7 +628,7 @@ export default class SyncManager {
           return filePath;
         }
         return null;
-      }),
+      },
     );
 
     return await Promise.all(
@@ -671,8 +678,10 @@ export default class SyncManager {
       .filter((filePath) => !conflictFiles.contains(filePath));
 
     // Get diff for common files
-    await Promise.all(
-      commonFiles.map(async (filePath: string) => {
+    await mapWithConcurrency(
+      commonFiles,
+      FILE_CONCURRENCY,
+      async (filePath: string) => {
         if (filePath === `${this.vault.configDir}/${MANIFEST_FILE_NAME}`) {
           // The manifest file must never trigger any action
           return;
@@ -733,7 +742,7 @@ export default class SyncManager {
           actions.push({ type: "download", filePath: filePath });
           return;
         }
-      }),
+      },
     );
 
     // Get diff for files in remote but not in local
@@ -800,7 +809,11 @@ export default class SyncManager {
     const contentBuffer = await this.vault.adapter.readBinary(filePath);
     const contentBytes = new Uint8Array(contentBuffer);
     const header = new TextEncoder().encode(`blob ${contentBytes.length}\0`);
-    const store = new Uint8Array([...header, ...contentBytes]);
+    // Spreading the bytes into an array literal costs several times the file
+    // size in memory and crashes mobile devices on large attachments.
+    const store = new Uint8Array(header.length + contentBytes.length);
+    store.set(header);
+    store.set(contentBytes, header.length);
     return await crypto.subtle.digest("SHA-1", store).then((hash) =>
       Array.from(new Uint8Array(hash))
         .map((b) => b.toString(16).padStart(2, "0"))
@@ -849,10 +862,12 @@ export default class SyncManager {
     // also get back its SHA, so we can set it together with other files.
     // We also do that right before creating the new tree because we need the SHAs of those blob to
     // correctly create it.
-    await Promise.all(
-      Object.keys(treeFiles)
-        .filter((filePath: string) => treeFiles[filePath].content)
-        .map(async (filePath: string) => {
+    await mapWithConcurrency(
+      Object.keys(treeFiles).filter(
+        (filePath: string) => treeFiles[filePath].content,
+      ),
+      FILE_CONCURRENCY,
+      async (filePath: string) => {
           // I don't fully trust file extensions as they're not completely reliable
           // to determine the file type, though I feel it's ok to compromise and rely
           // on them if it makes the plugin handle upload better on certain devices.
@@ -876,7 +891,7 @@ export default class SyncManager {
           // Can't have both sha and content set, so we delete it
           delete treeFiles[filePath].content;
           this.metadataStore.data.files[filePath].sha = sha;
-        }),
+      },
     );
 
     // Update manifest in list of new tree items
