@@ -1,4 +1,4 @@
-> **Fork note.** Maintained fork of [silvanocerza/github-gitless-sync](https://github.com/silvanocerza/github-gitless-sync), which has had no release since 1.0.7 (May 2025). 1.0.8 fixes an out-of-memory crash on mobile with large attachments (file hashing copied every byte into a JS array, and whole-vault passes ran every file at once) and makes the overwrite conflict modes actually apply. Install with [BRAT](https://github.com/TfTHacker/obsidian42-brat) using `rexlintc/github-gitless-sync`.
+> **Fork note.** Maintained fork of [silvanocerza/github-gitless-sync](https://github.com/silvanocerza/github-gitless-sync), which has had no release since 1.0.7 (May 2025). 1.0.8+ fixes an out-of-memory crash on mobile with large attachments (file hashing copied every byte into a JS array, and whole-vault passes ran every file at once) and makes the overwrite conflict modes actually apply. Install with [BRAT](https://github.com/TfTHacker/obsidian42-brat) using `rexlintc/github-gitless-sync`.
 
 # GitHub Gitless Sync
 

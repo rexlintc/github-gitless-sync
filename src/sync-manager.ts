@@ -27,7 +27,11 @@ import GitHubSyncPlugin from "./main";
 import { BlobReader, Entry, Uint8ArrayWriter, ZipReader } from "@zip.js/zip.js";
 
 // Maximum number of files hashed, downloaded or uploaded at the same time.
-const FILE_CONCURRENCY = 4;
+const FILE_CONCURRENCY = 1;
+
+// Files at least this big get a log line before they are hashed, so a crash
+// on a mobile device can be traced to the file that caused it.
+const LARGE_FILE_BYTES = 1024 * 1024;
 
 interface SyncAction {
   type: "upload" | "download" | "delete_local" | "delete_remote";
@@ -425,6 +429,9 @@ export default class SyncManager {
     const { files, sha: treeSha } = await this.client.getRepoContent({
       retry: true,
     });
+    await this.logger.info("Fetched remote tree", {
+      files: Object.keys(files).length,
+    });
     const manifest = files[`${this.vault.configDir}/${MANIFEST_FILE_NAME}`];
 
     if (manifest === undefined) {
@@ -446,8 +453,13 @@ export default class SyncManager {
     const remoteMetadata: Metadata = JSON.parse(
       decodeBase64String(blob.content),
     );
+    await this.logger.info("Fetched remote manifest", {
+      files: Object.keys(remoteMetadata.files).length,
+      localFiles: Object.keys(this.metadataStore.data.files).length,
+    });
 
     const conflicts = await this.findConflicts(remoteMetadata.files);
+    await this.logger.info("Checked conflicts", { conflicts: conflicts.length });
 
     // We treat every resolved conflict as an upload SyncAction, mainly cause
     // the user has complete freedom on the edits they can apply to the conflicting files.
@@ -805,6 +817,13 @@ export default class SyncManager {
     if (!(await this.vault.adapter.exists(filePath))) {
       // The file doesn't exist, can't calculate any SHA
       return null;
+    }
+    const stat = await this.vault.adapter.stat(filePath);
+    if (stat && stat.size >= LARGE_FILE_BYTES) {
+      await this.logger.info("Hashing large file", {
+        filePath,
+        size: stat.size,
+      });
     }
     const contentBuffer = await this.vault.adapter.readBinary(filePath);
     const contentBytes = new Uint8Array(contentBuffer);
