@@ -33,6 +33,11 @@ const FILE_CONCURRENCY = 1;
 // on a mobile device can be traced to the file that caused it.
 const LARGE_FILE_BYTES = 1024 * 1024;
 
+// Files bigger than this are never uploaded. Reading them into memory to
+// base64 encode them crashes mobile devices, and GitHub rejects blobs over
+// 100 MB anyway.
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
 interface SyncAction {
   type: "upload" | "download" | "delete_local" | "delete_remote";
   filePath: string;
@@ -502,7 +507,7 @@ export default class SyncManager {
       }
     }
 
-    const actions: SyncAction[] = [
+    const allActions: SyncAction[] = [
       ...(await this.determineSyncActions(
         remoteMetadata.files,
         this.metadataStore.data.files,
@@ -510,6 +515,22 @@ export default class SyncManager {
       )),
       ...conflictActions,
     ];
+    const actions: SyncAction[] = [];
+    for (const action of allActions) {
+      if (action.type === "upload") {
+        const stat = await this.vault.adapter.stat(
+          normalizePath(action.filePath),
+        );
+        if (stat && stat.size > MAX_UPLOAD_BYTES) {
+          await this.logger.warn("Skipping upload of file over size limit", {
+            filePath: action.filePath,
+            size: stat.size,
+          });
+          continue;
+        }
+      }
+      actions.push(action);
+    }
 
     if (actions.length === 0) {
       // Nothing to sync
