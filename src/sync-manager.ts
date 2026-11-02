@@ -469,6 +469,23 @@ export default class SyncManager {
       localFiles: Object.keys(this.metadataStore.data.files).length,
     });
 
+    // A manifest entry for a file that isn't in the tree can't be downloaded.
+    // Treat it as deleted as of its last change (a stale manifest written by an
+    // older plugin version listed hundreds of these).
+    for (const [filePath, remoteFile] of Object.entries(remoteMetadata.files)) {
+      if (
+        !remoteFile.deleted &&
+        !(filePath in files) &&
+        filePath !== `${this.vault.configDir}/${MANIFEST_FILE_NAME}`
+      ) {
+        remoteMetadata.files[filePath] = {
+          ...remoteFile,
+          deleted: true,
+          deletedAt: remoteFile.lastModified,
+        };
+      }
+    }
+
     const conflicts = await this.findConflicts(remoteMetadata.files);
     await this.logger.info("Checked conflicts", { conflicts: conflicts.length });
 
@@ -662,6 +679,10 @@ export default class SyncManager {
           return null;
         }
         const actualLocalSHA = await this.calculateSHA(filePath);
+        if (actualLocalSHA === null && !localFile.deleted) {
+          // Listed locally but missing on disk, determineSyncActions handles it
+          return null;
+        }
         const remoteFileHasBeenModifiedSinceLastSync =
           remoteFile.sha !== localFile.sha;
         const localFileHasBeenModifiedSinceLastSync =
@@ -748,6 +769,21 @@ export default class SyncManager {
         }
 
         const localSHA = await this.calculateSHA(filePath);
+        if (localSHA === null && !localFile.deleted) {
+          // The local metadata lists a file that isn't on disk, a stale entry
+          // left by an interrupted sync. Uploading it would fail, so follow the
+          // remote: adopt its deletion, or download it again.
+          if (remoteFile.deleted) {
+            this.metadataStore.data.files[filePath] = {
+              ...localFile,
+              deleted: true,
+              deletedAt: remoteFile.deletedAt,
+            };
+          } else {
+            actions.push({ type: "download", filePath: filePath });
+          }
+          return;
+        }
         if (remoteFile.sha === localSHA) {
           // If the remote file sha is identical to the actual sha of the local file
           // there are no actions to take.
@@ -831,6 +867,29 @@ export default class SyncManager {
       } else {
         actions.push({ type: "upload", filePath: filePath });
       }
+    });
+
+    // On case-insensitive file systems (macOS, iOS) a stale entry like
+    // "Allergy Shot.md" reads the live "Allergy shot.md" from disk. Uploading
+    // it would add a case-only duplicate path that breaks git checkouts on
+    // those systems, so retire the stale entry instead.
+    const remoteLive = new Map<string, string>();
+    for (const [p, f] of Object.entries(remoteFiles)) {
+      if (!f.deleted) remoteLive.set(p.toLowerCase(), p);
+    }
+    actions = actions.filter((action: SyncAction) => {
+      if (action.type !== "upload") return true;
+      const live = remoteLive.get(action.filePath.toLowerCase());
+      if (live === undefined || live === action.filePath) return true;
+      const local = this.metadataStore.data.files[action.filePath];
+      if (local) {
+        this.metadataStore.data.files[action.filePath] = {
+          ...local,
+          deleted: true,
+          deletedAt: Date.now(),
+        };
+      }
+      return false;
     });
 
     if (!this.settings.syncConfigDir) {
@@ -950,8 +1009,9 @@ export default class SyncManager {
     // We also do that right before creating the new tree because we need the SHAs of those blob to
     // correctly create it.
     await mapWithConcurrency(
+      // Empty files have "" as content and must be uploaded too
       Object.keys(treeFiles).filter(
-        (filePath: string) => treeFiles[filePath].content,
+        (filePath: string) => treeFiles[filePath].content !== undefined,
       ),
       FILE_CONCURRENCY,
       async (filePath: string) => {
@@ -1035,7 +1095,11 @@ export default class SyncManager {
 
   async downloadFile(file: GetTreeResponseItem, lastModified: number) {
     const fileMetadata = this.metadataStore.data.files[file.path];
-    if (fileMetadata && fileMetadata.sha === file.sha) {
+    if (
+      fileMetadata &&
+      fileMetadata.sha === file.sha &&
+      (await this.vault.adapter.exists(normalizePath(file.path)))
+    ) {
       // File already exists and has the same SHA, no need to download it again.
       return;
     }

@@ -99,7 +99,7 @@ export default class GithubClient {
           throw: false,
         });
       },
-      (res) => res.status !== 422, // Retry condition: only retry on 422 status
+      (res) => res.status !== 422 && res.status < 500, // Retry condition: only retry on 422 status
       retry ? maxRetries : 0, // Use 0 retries if retry is false
     );
 
@@ -150,7 +150,7 @@ export default class GithubClient {
           throw: false,
         });
       },
-      (res) => res.status !== 422,
+      (res) => res.status !== 422 && res.status < 500,
       retry ? maxRetries : 0,
     );
 
@@ -201,7 +201,7 @@ export default class GithubClient {
           throw: false,
         });
       },
-      (res) => res.status !== 422,
+      (res) => res.status !== 422 && res.status < 500,
       retry ? maxRetries : 0,
     );
 
@@ -237,7 +237,7 @@ export default class GithubClient {
           throw: false,
         });
       },
-      (res) => res.status !== 422,
+      (res) => res.status !== 422 && res.status < 500,
       5,
     );
 
@@ -260,7 +260,7 @@ export default class GithubClient {
           throw: false,
         });
       },
-      (res) => res.status !== 422,
+      (res) => res.status !== 422 && res.status < 500,
       retry ? maxRetries : 0,
     );
 
@@ -302,7 +302,7 @@ export default class GithubClient {
           throw: false,
         });
       },
-      (res) => res.status !== 422,
+      (res) => res.status !== 422 && res.status < 500,
       retry ? maxRetries : 0,
     );
 
@@ -345,7 +345,7 @@ export default class GithubClient {
           throw: false,
         });
       },
-      (res) => res.status !== 422,
+      (res) => res.status !== 422 && res.status < 500,
       retry ? maxRetries : 0,
     );
 
@@ -386,7 +386,7 @@ export default class GithubClient {
           throw: false,
         });
       },
-      (res) => res.status !== 422,
+      (res) => res.status !== 422 && res.status < 500,
       retry ? maxRetries : 0,
     );
 
@@ -436,7 +436,7 @@ export default class GithubClient {
           throw: false,
         });
       },
-      (res) => res.status !== 422,
+      (res) => res.status !== 422 && res.status < 500,
       retry ? maxRetries : 0,
     );
 
@@ -469,7 +469,7 @@ export default class GithubClient {
           throw: false,
         });
       },
-      (res) => res.status !== 422,
+      (res) => res.status !== 422 && res.status < 500,
       retry ? maxRetries : 0,
     );
 
