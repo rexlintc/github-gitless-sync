@@ -546,9 +546,12 @@ export default class SyncManager {
             // If the file was conflicting we need to read the content from the
             // conflict resolution instead of reading it from file since at this point
             // we still have not updated the local file.
-            const content =
-              resolution?.content ||
-              (await this.vault.adapter.read(normalizedPath));
+            // Binary files can't be read as text on iOS, so like in the first sync
+            // we set bogus content and let commitSync upload the binary blob.
+            let content = resolution?.content || "binaryfile";
+            if (!resolution && hasTextExtension(normalizedPath)) {
+              content = await this.vault.adapter.read(normalizedPath);
+            }
             newTreeFiles[action.filePath] = {
               path: action.filePath,
               mode: "100644",
@@ -618,6 +621,12 @@ export default class SyncManager {
         const remoteFile = filesMetadata[filePath];
         const localFile = this.metadataStore.data.files[filePath];
         if (remoteFile.deleted && localFile.deleted) {
+          return null;
+        }
+        if (!hasTextExtension(filePath)) {
+          // Binary files can't be shown in the text conflict view or read as
+          // text on iOS. Leaving them out makes determineSyncActions keep the
+          // locally changed copy and upload it.
           return null;
         }
         const actualLocalSHA = await this.calculateSHA(filePath);
