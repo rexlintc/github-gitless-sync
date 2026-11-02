@@ -83,11 +83,18 @@ export default class GithubClient {
   async getRepoContent({
     retry = false,
     maxRetries = 5,
+    treeSha = undefined,
+  }: {
+    retry?: boolean;
+    maxRetries?: number;
+    // Tree to read, defaults to the branch's current tree
+    treeSha?: string;
   } = {}): Promise<RepoContent> {
+    const ref = treeSha ?? this.settings.githubBranch;
     const response = await retryUntil(
       async () => {
         return requestUrl({
-          url: `https://api.github.com/repos/${this.settings.githubOwner}/${this.settings.githubRepo}/git/trees/${this.settings.githubBranch}?recursive=1`,
+          url: `https://api.github.com/repos/${this.settings.githubOwner}/${this.settings.githubRepo}/git/trees/${ref}?recursive=1`,
           headers: this.headers(),
           throw: false,
         });
@@ -215,6 +222,35 @@ export default class GithubClient {
    * @param maxRetries Maximum number of retry attempts (default: 5)
    * @returns The SHA of the branch head
    */
+  /**
+   * Gets the SHA of the tree a commit points to.
+   *
+   * @param commitSha SHA of the commit
+   * @returns SHA of the commit's tree
+   */
+  async getCommitTreeSha(commitSha: string) {
+    const response = await retryUntil(
+      async () => {
+        return requestUrl({
+          url: `https://api.github.com/repos/${this.settings.githubOwner}/${this.settings.githubRepo}/git/commits/${commitSha}`,
+          headers: this.headers(),
+          throw: false,
+        });
+      },
+      (res) => res.status !== 422,
+      5,
+    );
+
+    if (response.status < 200 || response.status >= 400) {
+      await this.logger.error("Failed to get commit", response);
+      throw new GithubAPIError(
+        response.status,
+        `Failed to get commit, status ${response.status}`,
+      );
+    }
+    return response.json.tree.sha as string;
+  }
+
   async getBranchHeadSha({ retry = false, maxRetries = 5 } = {}) {
     const response = await retryUntil(
       async () => {

@@ -431,8 +431,14 @@ export default class SyncManager {
 
   private async syncImpl() {
     await this.logger.info("Starting sync");
+    // Read the files of one specific commit and later commit on top of that
+    // same commit. If another device pushed in the meantime the branch update
+    // is not a fast forward, GitHub rejects it and the next sync starts over
+    // from the new head instead of silently reverting the other device.
+    const headSha = await this.client.getBranchHeadSha({ retry: true });
     const { files, sha: treeSha } = await this.client.getRepoContent({
       retry: true,
+      treeSha: await this.client.getCommitTreeSha(headSha),
     });
     await this.logger.info("Fetched remote tree", {
       files: Object.keys(files).length,
@@ -612,7 +618,12 @@ export default class SyncManager {
         }),
     ]);
 
-    await this.commitSync(newTreeFiles, treeSha, conflictResolutions);
+    await this.commitSync(
+      newTreeFiles,
+      treeSha,
+      conflictResolutions,
+      headSha,
+    );
   }
 
   /**
@@ -881,6 +892,33 @@ export default class SyncManager {
     treeFiles: { [key: string]: NewTreeRequestItem },
     baseTreeSha: string,
     conflictResolutions: ConflictResolution[] = [],
+    parentSha?: string,
+  ) {
+    // commitSyncImpl updates file SHAs in the metadata before pushing. If the
+    // push fails those SHAs would make locally changed files look already
+    // uploaded, and the next sync would overwrite them with the remote copy,
+    // so on failure we put the metadata back the way it was.
+    const snapshot = JSON.stringify(this.metadataStore.data);
+    try {
+      await this.commitSyncImpl(
+        treeFiles,
+        baseTreeSha,
+        conflictResolutions,
+        parentSha,
+      );
+    } catch (err) {
+      this.metadataStore.data = JSON.parse(snapshot);
+      await this.metadataStore.save();
+      await this.logger.error("Sync commit failed, metadata restored", `${err}`);
+      throw err;
+    }
+  }
+
+  private async commitSyncImpl(
+    treeFiles: { [key: string]: NewTreeRequestItem },
+    baseTreeSha: string,
+    conflictResolutions: ConflictResolution[],
+    parentSha?: string,
   ) {
     // Update local sync time
     const syncTime = Date.now();
@@ -960,7 +998,8 @@ export default class SyncManager {
       retry: true,
     });
 
-    const branchHeadSha = await this.client.getBranchHeadSha({ retry: true });
+    const branchHeadSha =
+      parentSha ?? (await this.client.getBranchHeadSha({ retry: true }));
 
     const commitSha = await this.client.createCommit({
       // TODO: Make this configurable or find a nicer commit message
@@ -969,7 +1008,11 @@ export default class SyncManager {
       parent: branchHeadSha,
     });
 
-    await this.client.updateBranchHead({ sha: commitSha, retry: true });
+    // With a pinned parent a 422 means the branch moved, retrying can't help.
+    await this.client.updateBranchHead({
+      sha: commitSha,
+      retry: parentSha === undefined,
+    });
 
     // Update the local content of all files that had conflicts we resolved
     await Promise.all(
